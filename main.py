@@ -66,12 +66,11 @@ class RobotDataRecorder:
         import rtde.rtde as rtde
         import rtde.rtde_config as rtde_config
         import time
+        from tempfile import NamedTemporaryFile
+        import os
 
         try:
             # Temporary Configuration File Setup
-            from tempfile import NamedTemporaryFile
-            config_file_path = None
-
             with NamedTemporaryFile(delete=False, mode='w', suffix='.xml') as tmp_config:
                 tmp_config.write("<rtde_config>\n  <output>\n")
                 for variable in selected_data:
@@ -82,13 +81,21 @@ class RobotDataRecorder:
             # Load RTDE Configuration
             conf = rtde_config.ConfigFile(config_file_path)
             output_names, output_types = conf.get_recipe("out")
+            
+            # Print for debugging
+            print("Output Names: ", output_names)
+            print("Output Types: ", output_types)
 
             # Connect to Robot
             self.conn = rtde.RTDE(host, port)
             self.conn.connect()
             self.conn.get_controller_version()
+            
+            # Setup RTDE output
             if not self.conn.send_output_setup(output_names, output_types, frequency=frequency):
                 raise ValueError("Unable to configure RTDE output.")
+            
+            # Start synchronization
             self.conn.send_start()
 
             # Start Recording
@@ -108,8 +115,8 @@ class RobotDataRecorder:
                 self.conn.send_pause()
                 self.conn.disconnect()
             if config_file_path:
-                import os
                 os.remove(config_file_path)
+
 
     def download_csv(self):
         if not self.data_buffer:
