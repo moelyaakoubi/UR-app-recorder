@@ -46,76 +46,45 @@ class RobotDataRecorder:
         self.download_btn.grid(row=3, column=1, padx=5, pady=10)
 
     def start_recording(self):
+        if self.recording:
+            self.recording = False
+            self.record_btn.config(text="Start Recording")
+            return
+
         host = self.host_entry.get()
-        try:
-            frequency = int(self.freq_entry.get())
-            selected_indices = self.data_listbox.curselection()
-            selected_data = [self.data_listbox.get(i) for i in selected_indices]
+        freq = self.freq_entry.get()
+        if not host or not freq:
+            messagebox.showerror("Error", "Please enter Host IP and Frequency.")
+            return
 
-            if not host or not selected_data or frequency <= 0:
-                messagebox.showerror("Error", "Please fill in all fields correctly.")
-                return
+        self.recording = True
+        self.record_btn.config(text="Stop Recording")
+        self.columns = ["time"]
+        for i in self.data_listbox.curselection():
+            self.columns.append(self.data_listbox.get(i))
 
-            self.recording = True
-            self.columns = selected_data
-            threading.Thread(target=self.record_data, args=(host, 30004, frequency, selected_data)).start()
-        except ValueError:
-            messagebox.showerror("Error", "Frequency must be a valid number.")
+        self.data_buffer = []
+        self.thread = threading.Thread(target=self.record_data, args=(host, freq))
+        self.thread.start()
 
-    def record_data(self, host, port, frequency, selected_data):
+    def record_data(self, host, freq):
         import rtde.rtde as rtde
-        import rtde.rtde_config as rtde_config
-        import time
-        from tempfile import NamedTemporaryFile
-        import os
 
-        try:
-            # Temporary Configuration File Setup
-            with NamedTemporaryFile(delete=False, mode='w', suffix='.xml') as tmp_config:
-                tmp_config.write("<rtde_config>\n  <output>\n")
-                for variable in selected_data:
-                    tmp_config.write(f"    <variable name=\"{variable}\" type=\"VECTOR6D\"/>\n")
-                tmp_config.write("  </output>\n</rtde_config>\n")
-                config_file_path = tmp_config.name
+        # Connect to UR Controller
+        self.conn = rtde.RTDE(host)
+        if not self.conn.connect():
+            messagebox.showerror("Error", "Failed to connect to UR Controller.")
+            return
 
-            # Load RTDE Configuration
-            conf = rtde_config.ConfigFile(config_file_path)
-            output_names, output_types = conf.get_recipe("out")
-            
-            # Print for debugging
-            print("Output Names: ", output_names)
-            print("Output Types: ", output_types)
+        # Start recording
+        while self.recording:
+            data = [self.conn.get_time()]
+            for col in self.columns[1:]:
+                data.append(self.conn.get_data(col))
+            self.data_buffer.append(data)
 
-            # Connect to Robot
-            self.conn = rtde.RTDE(host, port)
-            self.conn.connect()
-            self.conn.get_controller_version()
-            
-            # Setup RTDE output
-            if not self.conn.send_output_setup(output_names, output_types, frequency=frequency):
-                raise ValueError("Unable to configure RTDE output.")
-            
-            # Start synchronization
-            self.conn.send_start()
-
-            # Start Recording
-            self.data_buffer = []
-            i = 0
-            while self.recording:
-                state = self.conn.receive()
-                if state:
-                    self.data_buffer.append([getattr(state, name) for name in output_names])
-                    i += 1
-                time.sleep(1 / frequency)
-
-        except Exception as e:
-            messagebox.showerror("Error", f"Recording failed: {e}")
-        finally:
-            if self.conn:
-                self.conn.send_pause()
-                self.conn.disconnect()
-            if config_file_path:
-                os.remove(config_file_path)
+        # Disconnect from UR Controller
+        self.conn.disconnect
 
 
     def download_csv(self):
