@@ -16,7 +16,7 @@ class RobotDataRecorder:
         self.data_buffer = []
         self.columns = []
         
-        # GUI Components
+        # GUI Components 
         self.setup_ui()
     
     def setup_ui(self):
@@ -64,31 +64,87 @@ class RobotDataRecorder:
         except ValueError:
             messagebox.showerror("Error", "Frequency must be a valid number.")
 
-    def record_data(self, host, frequency, selected_data):
-        try:
-            # Establish RTDE connection
-            conn = rtde.RTDE(host, 30004)
-            conn.connect()
+    def record_data(host, port, frequency, selected_data, output_file, buffered=False, binary=False, samples=0):
+    import rtde.rtde as rtde
+    import rtde.rtde_config as rtde_config
+    import rtde.csv_writer as csv_writer
+    import rtde.csv_binary_writer as csv_binary_writer
 
-            # Create configuration file
-            config = rtde_config.ConfigFile()
-            for data in selected_data:
-                config.add_output(data, "VECTOR6D")
-            output_names, output_types = config.get_output_config()
-            conn.send_output_setup(output_names, output_types)
+    # Generate a dynamic configuration file
+    from tempfile import NamedTemporaryFile
+    import os
 
-            # Start streaming
-            conn.start()
-            self.data_buffer = []
-            while self.recording:
-                state = conn.receive()
-                if state:
-                    row = [getattr(state, col) for col in selected_data]
-                    self.data_buffer.append(row)
-            conn.disconnect()
-        except Exception as e:
-            messagebox.showerror("Connection Error", f"Error connecting to robot: {e}")
-            self.recording = False
+    with NamedTemporaryFile(delete=False, mode='w', suffix='.xml') as tmp_config:
+        tmp_config.write("<rtde_config>\n  <output>\n")
+        for variable in selected_data:
+            tmp_config.write(f"    <variable name=\"{variable}\" type=\"VECTOR6D\"/>\n")
+        tmp_config.write("  </output>\n</rtde_config>\n")
+        config_file_path = tmp_config.name
+
+    try:
+        # Load the dynamic configuration file
+        conf = rtde_config.ConfigFile(config_file_path)
+        output_names, output_types = conf.get_recipe("out")
+
+        # Establish RTDE connection
+        con = rtde.RTDE(host, port)
+        con.connect()
+
+        # Get the controller version
+        version = con.get_controller_version()
+        print(f"Connected to robot controller version: {version}")
+
+        # Setup the RTDE output
+        if not con.send_output_setup(output_names, output_types, frequency=frequency):
+            raise ValueError("Unable to configure RTDE output.")
+
+        # Start synchronization
+        if not con.send_start():
+            raise ValueError("Unable to start synchronization.")
+
+        # Open the output file
+        write_modes = "wb" if binary else "w"
+        with open(output_file, write_modes, newline='') as csvfile:
+            writer = (
+                csv_binary_writer.CSVBinaryWriter(csvfile, output_names, output_types)
+                if binary
+                else csv_writer.CSVWriter(csvfile, output_names, output_types)
+            )
+            writer.writeheader()
+
+            # Start recording
+            i = 1
+            keep_running = True
+            while keep_running:
+                if samples > 0 and i >= samples:
+                    keep_running = False
+
+                if i % frequency == 0:
+                    print(f"\rRecorded {i} samples.", end="")
+
+                try:
+                    state = con.receive_buffered(binary) if buffered else con.receive(binary)
+                    if state:
+                        writer.writerow(state)
+                        i += 1
+                except KeyboardInterrupt:
+                    print("\nRecording interrupted by user.")
+                    break
+                except rtde.RTDEException as e:
+                    print(f"RTDE error: {e}")
+                    break
+
+        print("\nRecording completed successfully.")
+
+        # Pause synchronization and disconnect
+        con.send_pause()
+        con.disconnect()
+
+    finally:
+        # Clean up the temporary configuration file
+        if os.path.exists(config_file_path):
+            os.remove(config_file_path)
+
 
     def download_csv(self):
         if not self.data_buffer:
